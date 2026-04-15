@@ -1,0 +1,7 @@
+This project is based on Famingo architechture which will generate report from chest X-Ray
+We are going to replace visual encoder with quantum connector
+- Read the both paper first
+- Download IU X-Ray  Dataset and load and print diffrent Value (Includes grounded Report)
+- Check 25-26 Q1 and other Top conferences like NeurIPS, CVPR, ICCV ECCV, BMVC ICLR, ICML, AAAI, MICCAI (except MDPI) 
+- Check if these papers have open source codes and add those links to the spreadsheet
+- Check the papers given in whatsapp group

@@ -1,0 +1,16 @@
+# Ignore dataset large files
+archive.zip
+*.zip
+data/images/images_normalized/
+data/swin_tiny_features_cache.pt
+
+# Ignore R2Gen large models / pycocoevalcap jar
+Phase2_DataPrep/R2Gen/pycocoevalcap/meteor/meteor-1.5.jar
+Phase2_DataPrep/R2Gen/pycocoevalcap/meteor/data/paraphrase-en.gz
+Phase2_DataPrep/R2Gen/pycocoevalcap/tokenizer/stanford-corenlp-3.4.1.jar
+
+# Python build artifacts
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+results/

@@ -1,0 +1,87 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{cite}
+\usepackage{bookmark}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    citecolor=blue,
+}
+
+\title{Literature Review: Chest X-ray Report Generation in the Age of Multimodal Foundation Models (2024--2026)}
+\author{Phase 1 Research Document}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Chest X-ray (CXR) report generation is a critical intersection of computer vision and natural language processing in the medical domain. Its goal is to alleviate the significant workload on radiologists by automatically drafting accurate, clinically grounded reports from medical imaging. While early models (e.g., standard CNN-RNN architectures) established basic feasibility, the 2024--2026 era has marked a paradigm shift.
+
+Based on a systematic review of 34 recent papers from top-tier venues (CVPR, AAAI, MICCAI, ICLR, NeurIPS, and leading journals), current research trends divide into several distinct streams:
+\begin{enumerate}
+    \item \textbf{The transition to Multimodal Large Language Models (MLLMs)} and foundation models.
+    \item \textbf{Innovative lightweight architectures} (such as State Space Models).
+    \item \textbf{Enhanced diagnostic realism} via patient progression tracking, knowledge graph integration, and spatial grounding.
+    \item \textbf{Error mitigation}, primarily addressing clinical hallucination and factual drift.
+\end{enumerate}
+
+This review synthesizes the state-of-the-art developments, situating them within the context of next-generation efficiency---a critical jumping-off point for hybrid quantum-classical frameworks like \textbf{QCXR-Flamingo} \cite{nimi2024qcxr}.
+
+\section{From Task-Specific Models to Foundation MLLMs}
+
+A significant portion of recent research focuses on adapting generalist LLMs or creating domain-specific medical foundation models to act as the cognitive engine for draft generation. 
+
+\textbf{Foundation Models and Adaptations:}
+CheXagent \cite{chen2024chexagent} and CheXOne \cite{zhou2026chexone} attempt to build zero-shot capable models pre-trained on massive clinical datasets. CheXOne notably incorporates explicit "reasoning traces," linking visual evidence to radiographic findings before producing a final report. XrayGPT \cite{thawkar2024xraygpt} utilizes a simple linear transformation to align a medical visual encoder (MedClip) with a frozen Vicuna LLM, mimicking the Flamingo approach. It relies on interactive summaries to fine-tune the LLM, showcasing the power of visual-instruction tuning. VILA-M3 \cite{vila2025vilam3} argues that generalist architectures are not enough. It introduces a specialized Instruction Fine-Tuning (IFT) stage that ingests data from domain-expert models (e.g., targeted classification and segmentation networks) to improve upon generalized models.
+
+\textbf{Addressing the Bottleneck:}
+Central to bridging the visual (scan) and text (LLM) domains is the \textit{visual bottleneck} or \textit{mapper}. The baseline R2GenGPT \cite{wang2023r2gengpt} demonstrated that a lightweight linear layer could effectively map frozen Swin-Transformer features into a frozen LLaMA-2 model space. Similarly, InVERGe \cite{roy2024inverge} employs an intelligent Cross-Modal Query Fusion Layer to optimize this mapping. 
+
+\textit{Relevance to QCXR-Flamingo:} The industry is solidifying around the "Frozen Encoder + Frozen LLM + Trainable Mapper" paradigm. QCXR-Flamingo's proposal to replace this classical mapper with a Variational Quantum Circuit (VQC) directly targets the heart of this modern architecture \cite{nimi2024qcxr}.
+
+\section{Grounding and Reducing Hallucinations}
+
+A persistent danger with utilizing LLMs for clinical reports is "hallucination"---the generation of text that is grammatically flawless but clinically incorrect or ungrounded.
+
+\textbf{Factuality and Alignment:}
+FactCheXcker \cite{factchexcker2025} attacks measurement hallucinations via an update paradigm that leverages code-generation to verify measurements before adding them to the report. Models like LLM-RG4 \cite{wang2025llmrg4} focus on minimizing "input-agnostic" hallucinations by incorporating a token-level loss weighting strategy that penalizes generic, ungrounded declarative statements. MPO \cite{xiao2025mpo} aligns the generation with multi-dimensional human preference vectors via reinforcement learning derived from conflicting radiologist preferences.
+
+\textbf{Gaze and Anatomy Grounding:}
+To mimic human radiologists, researchers are forcing models to adopt region-centric reasoning. MedRegA \cite{medrega2025} and S2D-ALIGN \cite{s2dalign2026} leverage regional grounding using shallow-to-deep auxiliary learning strategies. CoGaze \cite{liu2026cogaze} explicitly uses probabilistic priors derived from actual radiologist eye-tracking data to guide the attention modules toward diagnostically salient regions. LLaVA-TA \cite{llavata2026} dismantles standard narrative flow into independent, anatomically-grounded discrete topics to reduce linguistic flow assumptions.
+
+\section{Longitudinal Progression and Multi-View Alignment}
+
+Real-world patient care relies on analyzing the change between current and previous scans. HC-LLM \cite{hcllm2025} empowers LLMs to digest both time-shared and time-specific features from longitudinal images to explicitly state disease progression. PriorRG \cite{liu2026priorrg} incorporates patient-specific prior knowledge via a coarse-to-fine decoding phase. Libra \cite{zhang2025libra} introduces a Temporal Alignment Connector specifically to capture temporal differences. Moving beyond 2D, the X-WIN World Model \cite{xwin2026} distills volumetric knowledge from 3D CT scans to better predict structural overlap issues common in 2D CXRs.
+
+\section{Efficient Architectures: State Space Models}
+
+While LLMs are powerful, their quadratic attention complexity presents massive computational bottlenecks. 2024-2025 marks the rise of specialized efficient architectures bridging the gap:
+RRG-Mamba \cite{rrgmamba2025} integrates rotary position encoding into the Mamba State Space Model to allow linear-complexity dependency modeling for visual features. R2Gen-Mamba \cite{r2genmamba2025} showcases that hybrid Transformer-Mamba workflows can process long visual sequences far more efficiently than standard self-attention mechanisms without sacrificing report quality metrics.
+
+\textit{Relevance to QCXR-Flamingo:} The integration of Mamba strongly justifies the community's hunger for computational efficiency in RRG. QCXR-Flamingo attacks this same efficiency problem using Quantum Machine Learning rather than State Space Models.
+
+\section{Synthesis and Project Relevance}
+
+The review of 2024--2026 literature unequivocally proves the validity of the Flamingo-style architecture in modern medical imaging. The current state-of-the-art methodology can be summarized as:
+\begin{enumerate}
+    \item Take a powerful, pre-trained visual encoder.
+    \item Take a robust, instruction-tuned LLM.
+    \item Connect them via a mapping bottleneck, integrating domain knowledge and controlling generation.
+\end{enumerate}
+
+\textbf{Conclusion for QCXR-Flamingo:}
+The classical mapping layer is currently the most heavily engineered component in modern architectures, burdened with multi-view alignment, longitudinal analysis, and region-grounding. By introducing a Variational Quantum Circuit (VQC) to replace this classical mapper, QCXR-Flamingo steps directly into the frontier of resource-efficient medical AI. To ensure the QCXR-Flamingo project is benchmarked robustly against top-tier standards, it must be compared against the standard classical linear mappers used in R2GenGPT \cite{wang2023r2gengpt} and ideally evaluated on clinical accuracy metrics alongside standard NLP metrics, directly addressing the field's current focus on reducing clinical hallucination.
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

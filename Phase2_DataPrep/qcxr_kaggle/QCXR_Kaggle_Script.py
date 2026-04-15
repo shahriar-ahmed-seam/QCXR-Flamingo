@@ -1,0 +1,471 @@
+"""
+QCXR_Kaggle_Script.py
+─────────────────────
+Paste this ENTIRE file into a Kaggle Code cell (or add each section as a cell).
+Fixes applied:
+  - Auto-detects IMAGE_DIR by scanning the dataset folder (no more FileNotFoundError)
+  - Checks multiple possible annotation.json upload paths
+  - GPU-optimised (fp16 LLM, mixed precision encoder)
+
+Required Kaggle datasets attached to this notebook:
+  1. chest-xrays-indiana-university  (the IU-Xray images + CSVs)
+  2. qcxr-annotation                 (your annotation.json file)
+"""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 1 ─ Install & check GPU
+# ═══════════════════════════════════════════════════════════════════════════════
+import subprocess
+subprocess.run(["pip", "install", "-q", "transformers", "accelerate", "tqdm", "pycocoevalcap"], check=False)
+
+import torch
+print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU ONLY")
+if torch.cuda.is_available():
+    print("VRAM:", round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1), "GB")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 2 ─ Config  (IMAGE_DIR is AUTO-DETECTED — no more FileNotFoundError)
+# ═══════════════════════════════════════════════════════════════════════════════
+import os
+from pathlib import Path
+
+DATA_ROOT = Path("/kaggle/input/chest-xrays-indiana-university")
+
+# ── Auto-detect where the PNG images actually live ────────────────────────────
+IMAGE_DIR = None
+for root, dirs, files in os.walk(DATA_ROOT):
+    png_files = [f for f in files if f.endswith(".png")]
+    if len(png_files) > 10:          # found a folder with many images
+        IMAGE_DIR = Path(root)
+        print(f"✓ Found {len(png_files)} PNG images at: {IMAGE_DIR}")
+        print(f"  Sample: {png_files[:3]}")
+        break
+
+if IMAGE_DIR is None:
+    # Fallback: print the entire tree so you can inspect manually
+    print("ERROR: No PNG images found. Directory tree:")
+    for root, dirs, files in os.walk(DATA_ROOT):
+        print(" ", root, "→", len(files), "files")
+    raise FileNotFoundError(
+        "PNG images not found. Make sure 'chest-xrays-indiana-university' is added."
+    )
+
+# ── annotation.json: check multiple possible upload locations ─────────────────
+_ann_candidates = [
+    Path("/kaggle/input/qcxr-annotation/annotation.json"),
+    Path("/kaggle/input/qcxr-annotation/data/annotation.json"),
+    Path("/kaggle/working/annotation.json"),
+]
+ANN_PATH = next((p for p in _ann_candidates if p.exists()), None)
+if ANN_PATH is None:
+    # Also scan all input datasets for the file
+    for root, dirs, files in os.walk("/kaggle/input"):
+        if "annotation.json" in files:
+            ANN_PATH = Path(root) / "annotation.json"
+            break
+if ANN_PATH is None:
+    raise FileNotFoundError(
+        "annotation.json not found. Upload it as a Kaggle dataset named 'qcxr-annotation'."
+    )
+print(f"✓ annotation.json: {ANN_PATH}")
+
+RESULTS = Path("/kaggle/working/results")
+RESULTS.mkdir(exist_ok=True)
+
+LLM_NAME     = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+ENCODER_NAME = "microsoft/swin-base-patch4-window7-224"
+VISUAL_DIM   = 1024    # Swin-Base hidden dim
+DEVICE       = "cuda" if torch.cuda.is_available() else "cpu"
+BATCH_SIZE   = 4
+EPOCHS       = 15
+LR           = 1e-4
+MAX_TEXT_LEN = 60
+BEAM_SIZE    = 3
+BOTTLENECKS  = ["linear", "mlp", "transformer"]
+print(f"Device: {DEVICE}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 3 ─ Encoder
+# ═══════════════════════════════════════════════════════════════════════════════
+import torch.nn as nn
+from transformers import SwinModel
+
+class FrozenSwinEncoder(nn.Module):
+    def __init__(self, name):
+        super().__init__()
+        self.model = SwinModel.from_pretrained(name)
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+        self.model.eval()
+        self.hidden_dim = self.model.config.hidden_size
+
+    @torch.no_grad()
+    def forward(self, pixel_values):
+        return self.model(pixel_values=pixel_values).last_hidden_state
+
+print("FrozenSwinEncoder defined.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 4 ─ Bottleneck modules
+# ═══════════════════════════════════════════════════════════════════════════════
+class LinearBottleneck(nn.Module):
+    def __init__(self, vd, ld):
+        super().__init__()
+        self.proj = nn.Linear(vd, ld)
+    def forward(self, x):
+        return self.proj(x.mean(1)).unsqueeze(1)
+
+class MLPBottleneck(nn.Module):
+    def __init__(self, vd, ld, hd=512):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(vd, hd), nn.GELU(), nn.LayerNorm(hd), nn.Linear(hd, ld)
+        )
+    def forward(self, x):
+        return self.mlp(x.mean(1)).unsqueeze(1)
+
+class TransformerBottleneck(nn.Module):
+    def __init__(self, vd, ld, nh=8, nl=2):
+        super().__init__()
+        layer = nn.TransformerEncoderLayer(
+            d_model=vd, nhead=nh, dim_feedforward=vd * 2,
+            dropout=0.1, batch_first=True, norm_first=True
+        )
+        self.tf   = nn.TransformerEncoder(layer, num_layers=nl)
+        self.proj = nn.Linear(vd, ld)
+    def forward(self, x):
+        return self.proj(self.tf(x).mean(1)).unsqueeze(1)
+
+def get_bottleneck(name, vd, ld):
+    return {"linear": LinearBottleneck(vd, ld),
+            "mlp":    MLPBottleneck(vd, ld),
+            "transformer": TransformerBottleneck(vd, ld)}[name]
+
+print("Bottleneck classes defined.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 5 ─ Full QCXR model
+# ═══════════════════════════════════════════════════════════════════════════════
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+class QCXRModel(nn.Module):
+    def __init__(self, llm_name, bottleneck_name, visual_dim):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained(llm_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.llm = AutoModelForCausalLM.from_pretrained(llm_name, torch_dtype=torch.float16)
+        for p in self.llm.parameters():
+            p.requires_grad_(False)
+        self.llm.eval()
+        llm_dim = self.llm.config.hidden_size
+        self.bottleneck = get_bottleneck(bottleneck_name, visual_dim, llm_dim)
+
+    def _embed(self):
+        return self.llm.model.embed_tokens   # TinyLlama / LLaMA arch
+
+    def forward(self, vis_feats, input_ids, attn_mask, labels):
+        vis_token  = self.bottleneck(vis_feats.float())        # bottleneck is fp32
+        text_emb   = self._embed()(input_ids)                  # LLM embed returns fp16
+        inputs_emb = torch.cat([vis_token.to(text_emb.dtype), text_emb], dim=1)
+        B = input_ids.size(0)
+        vm = torch.ones(B, 1, device=input_ids.device, dtype=attn_mask.dtype)
+        vl = torch.full((B, 1), -100, device=input_ids.device, dtype=labels.dtype)
+        return self.llm(
+            inputs_embeds=inputs_emb,
+            attention_mask=torch.cat([vm, attn_mask], 1),
+            labels=torch.cat([vl, labels], 1)
+        ).loss
+
+    @torch.no_grad()
+    def generate(self, vis_feats, max_new_tokens=80, beam_size=3):
+        B   = vis_feats.size(0)
+        vt  = self.bottleneck(vis_feats.float())               # bottleneck is fp32
+        bos = torch.full((B, 1), self.tokenizer.bos_token_id or 1,
+                         device=vis_feats.device, dtype=torch.long)
+        bos_e = self._embed()(bos)                             # LLM embed returns fp16
+        ie    = torch.cat([vt.to(bos_e.dtype), bos_e], 1)     # cast to match LLM dtype
+        am    = torch.ones(B, ie.size(1), device=vis_feats.device, dtype=torch.long)
+        gen   = self.llm.generate(
+            inputs_embeds=ie, attention_mask=am,
+            max_new_tokens=max_new_tokens, num_beams=beam_size,
+            early_stopping=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+        return self.tokenizer.batch_decode(gen, skip_special_tokens=True)
+
+print("QCXRModel defined.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 6 ─ Dataset
+# ═══════════════════════════════════════════════════════════════════════════════
+import json
+from PIL import Image
+from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
+
+class IUXrayDataset(Dataset):
+    def __init__(self, split, tokenizer, transform=None):
+        ann = json.loads(ANN_PATH.read_text())
+        self.examples  = ann[split]
+        self.tokenizer = tokenizer
+        self.transform = transform
+        # Validate a few paths on startup so we catch errors early
+        for ex in self.examples[:3]:
+            for f in ex["image_path"]:
+                p = IMAGE_DIR / f
+                if not p.exists():
+                    raise FileNotFoundError(
+                        f"Image not found: {p}\n"
+                        f"IMAGE_DIR detected as: {IMAGE_DIR}\n"
+                        f"Check the dataset folder structure."
+                    )
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, i):
+        ex = self.examples[i]
+        imgs = []
+        for f in ex["image_path"]:
+            img = Image.open(IMAGE_DIR / f).convert("RGB")
+            if self.transform:
+                img = self.transform(img)
+            imgs.append(img)
+        visual = torch.stack(imgs)
+        enc = self.tokenizer(
+            ex["report"], max_length=MAX_TEXT_LEN,
+            truncation=True, return_tensors="pt"
+        )
+        ids = enc["input_ids"].squeeze(0)
+        return ex["id"], visual, ids, ids.clone()
+
+def collate(batch):
+    ids, vis, inp, lbl = zip(*batch)
+    inp  = pad_sequence(inp, batch_first=True, padding_value=0)
+    lbl  = pad_sequence(lbl, batch_first=True, padding_value=-100)
+    attn = (inp != 0).long()
+    return ids, torch.stack(vis), inp, attn, lbl
+
+train_tf = transforms.Compose([
+    transforms.Resize(256), transforms.RandomCrop(224),
+    transforms.RandomHorizontalFlip(), transforms.ToTensor(),
+    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+])
+val_tf = transforms.Compose([
+    transforms.Resize((224, 224)), transforms.ToTensor(),
+    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+])
+print("Dataset class defined.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 7 ─ Evaluation metrics
+# ═══════════════════════════════════════════════════════════════════════════════
+from collections import Counter
+import math
+
+def ngrams(tok, n):
+    return Counter(tuple(tok[i:i+n]) for i in range(len(tok) - n + 1))
+
+def bleu_n(preds, refs, n):
+    cl = to = rl = hl = 0
+    for h, r in zip(preds, refs):
+        h = h.lower().split(); r = r.lower().split()
+        rl += len(r); hl += len(h)
+        rng = ngrams(r, n); hng = ngrams(h, n)
+        for g, c in hng.items():
+            cl += min(c, rng.get(g, 0))
+        to += max(0, len(h) - n + 1)
+    p  = cl / max(to, 1)
+    bp = 1.0 if hl >= rl else math.exp(1 - rl / max(hl, 1))
+    return bp * p
+
+def lcs(x, y):
+    m, n = len(x), len(y)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            dp[i][j] = dp[i-1][j-1] + 1 if x[i-1] == y[j-1] else max(dp[i-1][j], dp[i][j-1])
+    return dp[m][n]
+
+def rouge_l(preds, refs):
+    sc = []
+    for h, r in zip(preds, refs):
+        h = h.lower().split(); r = r.lower().split()
+        l  = lcs(h, r)
+        p  = l / max(len(h), 1); rc = l / max(len(r), 1)
+        sc.append(2 * p * rc / max(p + rc, 1e-8))
+    return sum(sc) / max(len(sc), 1)
+
+KEYWORDS = {
+    "Atelectasis": ["atelectasis"], "Cardiomegaly": ["cardiomegaly"],
+    "Consolidation": ["consolidation"], "Edema": ["edema"],
+    "Effusion": ["effusion"], "Emphysema": ["emphysema"],
+    "Fibrosis": ["fibrosis"], "Infiltration": ["infiltrate"],
+    "Mass": ["mass"], "Nodule": ["nodule"],
+    "Pleural_Thickening": ["pleural thickening"],
+    "Pneumonia": ["pneumonia"], "Pneumothorax": ["pneumothorax"],
+}
+
+def clin_f1(preds, refs):
+    tp = fp = fn = 0
+    for p, r in zip(preds, refs):
+        pl = {l for l, kws in KEYWORDS.items() if any(k in p.lower() for k in kws)}
+        rl = {l for l, kws in KEYWORDS.items() if any(k in r.lower() for k in kws)}
+        tp += len(pl & rl); fp += len(pl - rl); fn += len(rl - pl)
+    pr = tp / max(tp + fp, 1); re = tp / max(tp + fn, 1)
+    return 2 * pr * re / max(pr + re, 1e-8)
+
+def compute_metrics(preds, refs):
+    try:
+        from pycocoevalcap.cider.cider import Cider
+        res = {i: [p] for i, p in enumerate(preds)}
+        gts = {i: [r] for i, r in enumerate(refs)}
+        cider_score, _ = Cider().compute_score(gts, res)
+    except ImportError:
+        cider_score = 0.0
+
+    return {
+        "BLEU-1":      round(bleu_n(preds, refs, 1), 4),
+        "BLEU-4":      round(bleu_n(preds, refs, 4), 4),
+        "ROUGE-L":     round(rouge_l(preds, refs),   4),
+        "CIDEr":       round(cider_score, 4),
+        "Clinical-F1": round(clin_f1(preds, refs),   4),
+    }
+
+print("Evaluation functions defined.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 8 ─ Training & eval functions
+# ═══════════════════════════════════════════════════════════════════════════════
+import time
+
+def train_epoch(model, encoder, loader, optimizer):
+    model.bottleneck.train(); total = 0
+    for i, (uids, vis, inp, attn, lbl) in enumerate(loader):
+        B, V, C, H, W = vis.shape
+        flat  = vis.view(B * V, C, H, W).to(DEVICE)
+        feats = encoder(flat).view(B, V, -1, encoder.hidden_dim).mean(1)
+        inp, attn, lbl = inp.to(DEVICE), attn.to(DEVICE), lbl.to(DEVICE)
+        optimizer.zero_grad()
+        loss = model(feats, inp, attn, lbl)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        total += loss.item()
+        if (i + 1) % 50 == 0:
+            print(f"  step {i+1}/{len(loader)}  loss={loss.item():.4f}")
+    return total / max(len(loader), 1)
+
+@torch.no_grad()
+def evaluate_split(model, encoder, loader):
+    model.eval(); preds, refs = [], []
+    for uids, vis, inp, attn, lbl in loader:
+        B, V, C, H, W = vis.shape
+        flat  = vis.view(B * V, C, H, W).to(DEVICE)
+        feats = encoder(flat).view(B, V, -1, encoder.hidden_dim).mean(1)
+        preds.extend(model.generate(feats, max_new_tokens=MAX_TEXT_LEN, beam_size=BEAM_SIZE))
+        for l in lbl:
+            t = l[l != -100].tolist()
+            refs.append(model.tokenizer.decode(t, skip_special_tokens=True))
+    return compute_metrics(preds, refs)
+
+print("Training functions defined.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 9 ─ Load shared components (encoder + tokenizer)
+# ═══════════════════════════════════════════════════════════════════════════════
+print(f"Loading encoder: {ENCODER_NAME} ...")
+encoder = FrozenSwinEncoder(ENCODER_NAME).to(DEVICE)
+print(f"Encoder hidden_dim: {encoder.hidden_dim}")
+
+print(f"Loading tokenizer: {LLM_NAME} ...")
+tmp_tok = AutoTokenizer.from_pretrained(LLM_NAME)
+if tmp_tok.pad_token is None:
+    tmp_tok.pad_token = tmp_tok.eos_token
+print("Components ready.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 10 ─ Build data loaders
+# ═══════════════════════════════════════════════════════════════════════════════
+train_ds = IUXrayDataset("train", tmp_tok, train_tf)
+val_ds   = IUXrayDataset("val",   tmp_tok, val_tf)
+test_ds  = IUXrayDataset("test",  tmp_tok, val_tf)
+
+train_loader = DataLoader(train_ds, BATCH_SIZE, shuffle=True,  collate_fn=collate, num_workers=2)
+val_loader   = DataLoader(val_ds,   BATCH_SIZE, shuffle=False, collate_fn=collate, num_workers=2)
+test_loader  = DataLoader(test_ds,  BATCH_SIZE, shuffle=False, collate_fn=collate, num_workers=2)
+print(f"Train: {len(train_ds)}  Val: {len(val_ds)}  Test: {len(test_ds)}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 11 ─ Train all 3 bottlenecks
+# ═══════════════════════════════════════════════════════════════════════════════
+import csv
+
+all_results = {}
+
+for bt in BOTTLENECKS:
+    print(f"\n{'='*55}")
+    print(f"  TRAINING: {bt.upper()} BOTTLENECK")
+    print(f"{'='*55}")
+
+    model = QCXRModel(LLM_NAME, bt, VISUAL_DIM).to(DEVICE)
+    model.bottleneck = model.bottleneck.float()   # bottleneck fp32 for stable grads
+    print(f"Trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad], lr=LR, weight_decay=1e-4
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+
+    best_bleu4 = 0.0
+    ckpt = RESULTS / f"best_{bt}.pt"
+
+    for epoch in range(1, EPOCHS + 1):
+        t0   = time.time()
+        loss = train_epoch(model, encoder, train_loader, optimizer)
+        scheduler.step()
+        vm   = evaluate_split(model, encoder, val_loader)
+        print(f"  Epoch {epoch}/{EPOCHS}  loss={loss:.4f}  val={vm}  ({time.time()-t0:.0f}s)")
+        if vm["BLEU-4"] > best_bleu4:
+            best_bleu4 = vm["BLEU-4"]
+            torch.save(model.bottleneck.state_dict(), ckpt)
+            print(f"  *** Best BLEU-4={best_bleu4:.4f} saved ***")
+
+    model.bottleneck.load_state_dict(torch.load(ckpt))
+    test_m = evaluate_split(model, encoder, test_loader)
+    print(f"  TEST: {test_m}")
+    all_results[bt] = test_m
+
+    del model, optimizer, scheduler
+    torch.cuda.empty_cache()
+
+print("\nAll baselines trained!")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CELL 12 ─ Final results table + CSV
+# ═══════════════════════════════════════════════════════════════════════════════
+print(f"\n{'='*60}")
+print("  FINAL RESULTS TABLE")
+print(f"{'='*60}")
+print(f"{'Model':<22} {'BLEU':>8} {'ROUGE':>8} {'CIDEr':>8} {'Clin-F1':>9}")
+print("-" * 62)
+for name, m in all_results.items():
+    print(f"{name:<22} {m['BLEU-4']:>8.4f} {m['ROUGE-L']:>8.4f} "
+          f"{m['CIDEr']:>8.4f} {m['Clinical-F1']:>9.4f}")
+print("=" * 62)
+
+print("\nPaper targets (QCXR-Flamingo Table 1):")
+for row in [("Linear", 0.25, 0.30, 0.80, 0.60), ("MLP", 0.28, 0.33, 0.90, 0.65), ("Transformer", 0.30, 0.35, 1.00, 0.68)]:
+    print(f"  {row[0]:<14} BLEU≈{row[1]}  ROUGE≈{row[2]}  CIDEr≈{row[3]}  Clin-F1≈{row[4]}")
+
+csv_path = RESULTS / "metrics_table.csv"
+with open(csv_path, "w", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=["Model", "BLEU-1", "BLEU-4",
+                                       "ROUGE-L", "CIDEr", "Clinical-F1"])
+    w.writeheader()
+    for name, m in all_results.items():
+        w.writerow({"Model": name, **m})
+print(f"\nCSV saved to {csv_path}")

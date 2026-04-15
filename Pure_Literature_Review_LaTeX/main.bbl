@@ -1,0 +1,125 @@
+\begin{thebibliography}{10}
+
+\bibitem{chen2024chexagent}
+Zhihong Chen, Maya Varma, Justin Xu, et~al.
+\newblock Chexagent: Towards a foundation model for chest x-ray interpretation.
+\newblock {\em arXiv preprint arXiv:2401.12208}, 2024.
+
+\bibitem{rrgmamba2025}
+H.~Eleanor et~al.
+\newblock Rrg-mamba: Efficient radiology report generation with state space
+  model.
+\newblock In {\em Proceedings of the International Joint Conference on
+  Artificial Intelligence (IJCAI)}, 2025.
+
+\bibitem{liu2026cogaze}
+Kang Liu et~al.
+\newblock Cogaze: Context- and gaze-guided vision-language pretraining for cxr.
+\newblock {\em arXiv preprint arXiv:2603.26049}, 2026.
+
+\bibitem{liu2026priorrg}
+Kang Liu et~al.
+\newblock Priorrg: Prior-guided contrastive pre-training and coarse-to-fine
+  decoding.
+\newblock In {\em Proceedings of the AAAI Conference on Artificial
+  Intelligence}, 2026.
+
+\bibitem{hcllm2025}
+Tengfei Liu et~al.
+\newblock Hc-llm: Historical-constrained large language models for radiology
+  report generation.
+\newblock In {\em Proceedings of the AAAI Conference on Artificial
+  Intelligence}, 2025.
+
+\bibitem{roy2024inverge}
+S.~Roy et~al.
+\newblock Inverge: Intelligent visual encoder for bridging modalities in report
+  generation.
+\newblock In {\em Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, 2024.
+
+\bibitem{r2genmamba2025}
+Yongheng Sun et~al.
+\newblock R2gen-mamba: Selective state space model for radiology report
+  generation.
+\newblock In {\em IEEE International Symposium on Biomedical Imaging (ISBI)},
+  2025.
+
+\bibitem{thawkar2024xraygpt}
+Omkar Thawkar et~al.
+\newblock Xraygpt: Chest radiographs summarization using large medical vlms.
+\newblock {\em ACL Workshop}, 2024.
+
+\bibitem{factchexcker2025}
+Unknown.
+\newblock Factchexcker: Mitigating measurement hallucinations in cxr report
+  generation.
+\newblock In {\em Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, 2025.
+
+\bibitem{medrega2025}
+Unknown.
+\newblock Medrega: Interpretable bilingual multimodal llm for diverse
+  biomedical tasks.
+\newblock In {\em International Conference on Learning Representations (ICLR)},
+  2025.
+
+\bibitem{vila2025vilam3}
+Unknown.
+\newblock Vila-m3: Enhancing vision-language models with medical expert
+  knowledge.
+\newblock In {\em Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, 2025.
+
+\bibitem{llavata2026}
+Unknown.
+\newblock Rethinking radiology report generation: From narrative flow to
+  topic-guided findings.
+\newblock In {\em International Conference on Learning Representations (ICLR)},
+  2026.
+
+\bibitem{s2dalign2026}
+Unknown.
+\newblock S2d-align: Shallow-to-deep auxiliary learning for radiology report
+  generation.
+\newblock In {\em Proceedings of the AAAI Conference on Artificial
+  Intelligence}, 2026.
+
+\bibitem{xwin2026}
+Unknown.
+\newblock X-win: Building chest radiograph world model via predictive sensing.
+\newblock In {\em Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, 2026.
+
+\bibitem{wang2025llmrg4}
+Z.~Wang et~al.
+\newblock Llm-rg4: Flexible and factual radiology report generation across
+  diverse input contexts.
+\newblock In {\em Proceedings of the AAAI Conference on Artificial
+  Intelligence}, 2025.
+
+\bibitem{wang2023r2gengpt}
+Zhanyu Wang et~al.
+\newblock R2gengpt: Radiology report generation with frozen llms.
+\newblock {\em arXiv preprint arXiv:2309.09812}, 2023.
+
+\bibitem{xiao2025mpo}
+Ting Xiao et~al.
+\newblock Radiology report generation via multi-objective preference
+  optimization.
+\newblock In {\em Proceedings of the AAAI Conference on Artificial
+  Intelligence}, 2025.
+
+\bibitem{zhang2025libra}
+X.~Zhang et~al.
+\newblock Libra: Leveraging temporal images for biomedical radiology analysis.
+\newblock In {\em Proceedings of the Association for Computational Linguistics
+  (ACL)}, 2025.
+
+\bibitem{zhou2026chexone}
+YB~Zhou et~al.
+\newblock Chexone: A reasoning-enabled vision-language foundation model for cxr
+  interpretation.
+\newblock {\em arXiv preprint arXiv:2604.00493}, 2026.
+
+\end{thebibliography}

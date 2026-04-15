@@ -1,0 +1,79 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{cite}
+\usepackage{bookmark}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    citecolor=blue,
+}
+
+\title{Comprehensive Literature Review: Chest X-ray Report Generation in the Era of Multimodal Foundation Models (2024--2026)}
+\author{A Review of the State-of-the-Art}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Chest X-ray (CXR) report generation represents a critical intersection of computer vision and natural language processing in the medical domain. Its overarching goal is to alleviate the significant clinical workload on radiologists by automatically drafting accurate, clinically grounded reports from medical imaging. While early deep learning approaches---primarily standard convolutional and recurrent neural network architectures---established the basic feasibility of automatic text generation from images, the 2024--2026 era has marked a definitive paradigm shift.
+
+Based on a systematic review of 34 recent papers from top-tier venues (including CVPR, AAAI, MICCAI, ICLR, NeurIPS, and leading journals), current research trends divide into several distinct streams:
+\begin{enumerate}
+    \item \textbf{The transition to Multimodal Large Language Models (MLLMs)} and unified foundation models.
+    \item \textbf{Innovative lightweight architectures}, such as State Space Models, addressing computational bottlenecks.
+    \item \textbf{Enhanced diagnostic realism} via patient progression tracking, knowledge graph integration, and spatial grounding.
+    \item \textbf{Error mitigation techniques}, primarily concentrating on the pervasive issue of clinical hallucination and factual drift.
+\end{enumerate}
+
+This review synthesizes these state-of-the-art developments to provide a comprehensive overview of how modern AI is reshaping automated radiology reporting.
+
+\section{From Task-Specific Models to Foundation MLLMs}
+
+A significant portion of recent research focuses on adapting generalist large language models (LLMs) or creating domain-specific medical foundation models to act as the cognitive engine for draft generation. 
+
+\textbf{Foundation Models and Adaptations:}
+CheXagent \cite{chen2024chexagent} and CheXOne \cite{zhou2026chexone} attempt to build zero-shot capable models pre-trained on massive datasets across varied clinical tasks. CheXOne notably incorporates explicit ``reasoning traces,'' which explicitly link visual evidence to radiographic findings before producing a final report. This bridges the gap between opaque generation and clinical interpretability. XrayGPT \cite{thawkar2024xraygpt} utilizes a simple linear transformation to align a medical visual encoder (MedClip) with a frozen Vicuna LLM, strongly mimicking the Flamingo approach. It relies on extensive interactive summaries to fine-tune the LLM, showcasing the power of visual-instruction tuning. VILA-M3 \cite{vila2025vilam3} argues that generalist learning architectures are insufficient for the nuances of healthcare. It introduces a specialized Instruction Fine-Tuning (IFT) stage that ingests data from localized domain-expert models (e.g., targeted classification and segmentation networks) to significantly improve upon generalized models like Med-Gemini.
+
+\textbf{Addressing the Visual-Textual Bottleneck:}
+Central to bridging the visual domain of medical scans and the textual domain of an LLM is the \textit{visual bottleneck} or \textit{mapper}. The strong baseline architecture R2GenGPT \cite{wang2023r2gengpt} demonstrated that a relatively lightweight linear layer could effectively map frozen Swin-Transformer features into a frozen LLaMA-2 linguistic space without fine-tuning the massive backbone networks. Similarly, InVERGe \cite{roy2024inverge} employs an intelligent Cross-Modal Query Fusion Layer to continuously optimize this mapping, proving that highly efficient interconnects between modalities are crucial for high-performance generation. 
+
+\section{Grounding and Reducing Hallucinations}
+
+A persistent and dangerous challenge with utilizing LLMs for clinical reports is ``hallucination''---the generation of text that is grammatically flawless and contextually plausible, but clinically incorrect or entirely ungrounded in the provided radiographic image.
+
+\textbf{Factuality and Prompt Alignment:}
+FactCheXcker \cite{factchexcker2025} attacks measurement hallucinations (e.g., specifying endotracheal tube placement sizes incorrectly) via an update paradigm that leverages step-by-step code-generation to verify measurements before adding them to the final report summary. Models like LLM-RG4 \cite{wang2025llmrg4} focus on minimizing ``input-agnostic'' hallucinations by incorporating a token-level loss weighting strategy that penalizes generic, ungrounded declarative statements. Furthermore, Multi-objective Preference Optimization (MPO) \cite{xiao2025mpo} aligns the generation process with multi-dimensional human preference vectors using associative reinforcement learning, acknowledging that different clinicians prioritize fluency and diagnostic brevity differently.
+
+\textbf{Gaze and Anatomy Grounding:}
+To accurately mimic human radiologists---who visually scan specific anatomical regions before writing localized findings---researchers are forcing models to adopt strict region-centric reasoning. MedRegA \cite{medrega2025} and S2D-ALIGN \cite{s2dalign2026} leverage regional grounding using shallow-to-deep auxiliary learning strategies. CoGaze \cite{liu2026cogaze} takes this a step further by explicitly utilizing probabilistic priors derived from actual radiologist eye-tracking data to guide attention modules toward diagnostically salient regions. LLaVA-TA \cite{llavata2026} dismantles standard narrative flow into independent, anatomically-grounded discrete topics to reduce linguistic flow assumptions, proving that narrative coherence often overrides visual accuracy in default LLMs.
+
+\section{Longitudinal Progression and Multi-View Alignment}
+
+A static chest X-ray is often only part of the puzzle; real-world patient care heavily relies on analyzing the change between current and previous scans to track disease progression or healing.
+
+HC-LLM \cite{hcllm2025} empowers LLMs to digest both time-shared and time-specific features from longitudinal images, allowing the model to explicitly evaluate disease evolution over time. PriorRG \cite{liu2026priorrg} integrates patient-specific prior knowledge via a dedicated coarse-to-fine decoding phase, demonstrating that referencing an older scan fundamentally improves the clinical utility of the generated report. Libra \cite{zhang2025libra} introduces a Temporal Alignment Connector specifically engineered to capture temporal differences between sequences. Moving beyond standard 2D views, the X-WIN World Model \cite{xwin2026} distills volumetric knowledge from 3D CT scans to better predict structural overlap issues common in 2D CXRs, allowing better 2D diagnostic feature extraction.
+
+\section{Efficient Architectures: The Rise of State Space Models}
+
+While LLMs are highly capable, their quadratic attention complexity presents massive computational bottlenecks, especially for high-resolution medical sequences that require pixel-level detail.
+
+The 2024--2025 timeline marks the rise of specialized efficient architectures bridging this computational gap:
+RRG-Mamba \cite{rrgmamba2025} integrates rotary position encoding into the Mamba State Space Model (SSM) to allow linear-complexity dependency modeling for complex visual features without standard self-attention degradation. Correspondingly, R2Gen-Mamba \cite{r2genmamba2025} showcases that hybrid Transformer-Mamba workflows can process incredibly long visual sequences far more efficiently than standard self-attention mechanisms without sacrificing core report quality metrics such as BLEU or CIDEr.
+
+\section{Conclusion}
+
+The systematic review of 2024--2026 literature unequivocally proves the validity of the frozen-encoder/frozen-LLM multimodal architecture in modern medical imaging. The current state-of-the-art methodology heavily relies upon powerful visual encoders mapped to instruction-tuned LLMs via specialized bottlenecks. Moving forward, the field is clearly oriented toward methods that reduce ungrounded hallucination via preference optimization, enforce multi-view and temporal progression tracking, and transition toward non-quadratic attention mechanisms (like SSMs) to manage the immense computational load of medical vision-language modeling.
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}
