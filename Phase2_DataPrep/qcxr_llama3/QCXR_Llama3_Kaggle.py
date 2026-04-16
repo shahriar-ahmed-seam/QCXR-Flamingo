@@ -88,12 +88,15 @@ LLM_DIM       = 4096       # Llama-3.1-8B hidden dim
 
 # ── Training hyperparameters ──────────────────────────────────────────────────
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE    = 2          # Keep small — 8B model is large even at 4-bit
+# ── Select which bottleneck to train in this session ───────────
+# Options: "linear", "mlp", "transformer"
+CURRENT_BOTTLENECK = "linear" 
+
+BATCH_SIZE    = 4          # Slightly increased for T4 x2
 EPOCHS        = 15
-LR            = 5e-5       # Slightly lower LR recommended for 8B backbone
+LR            = 5e-5       
 MAX_TEXT_LEN  = 60
-BEAM_SIZE     = 3
-BOTTLENECKS   = ["linear", "mlp", "transformer"]
+BEAM_SIZE     = 1          # Set to 1 for 3x faster training; use 3 only for final test
 
 print(f"Device: {DEVICE} | Batch: {BATCH_SIZE} | LLM: {LLM_NAME}")
 
@@ -407,11 +410,13 @@ def train_epoch(model, encoder, loader, optimizer):
             print(f"  step {i+1}/{len(loader)}  loss={loss.item():.4f}")
     return total / max(len(loader), 1)
 
+from tqdm.auto import tqdm
+
 @torch.no_grad()
 def evaluate_split(model, encoder, loader):
     model.eval()
     preds, refs = [], []
-    for uids, vis, inp, attn, lbl in loader:
+    for uids, vis, inp, attn, lbl in tqdm(loader, desc="  Generating Reports"):
         B, V, C, H, W = vis.shape
         flat  = vis.view(B*V, C, H, W).to(DEVICE)
         feats = encoder(flat).view(B, V, -1, encoder.hidden_dim).mean(1)
@@ -451,49 +456,45 @@ test_loader  = DataLoader(test_ds,  BATCH_SIZE, shuffle=False, collate_fn=collat
 print(f"✓ Train: {len(train_ds)}  Val: {len(val_ds)}  Test: {len(test_ds)}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CELL 12 ─ Train all 3 bottlenecks with Llama-3.1-8B
+# CELL 12 ─ Train the selected bottleneck
 # ═══════════════════════════════════════════════════════════════════════════════
 import csv
 
 all_results = {}
+bt = CURRENT_BOTTLENECK
 
-for bt in BOTTLENECKS:
-    print(f"\n{'='*60}")
-    print(f"  TRAINING: {bt.upper()} BOTTLENECK  (Llama-3.1-8B backbone)")
-    print(f"{'='*60}")
+print(f"\n{'='*60}")
+print(f"  TRAINING: {bt.upper()} BOTTLENECK  (Llama-3.1-8B backbone)")
+print(f"{'='*60}")
 
-    model = QCXRLlama3Model(LLM_NAME, bt)
-    # Move only the bottleneck to CUDA — LLM is already device_mapped
-    model.bottleneck = model.bottleneck.to(DEVICE)
+model = QCXRLlama3Model(LLM_NAME, bt)
+model.bottleneck = model.bottleneck.to(DEVICE)
 
-    trainable = [p for p in model.parameters() if p.requires_grad]
-    print(f"Trainable params: {sum(p.numel() for p in trainable):,}")
+trainable = [p for p in model.parameters() if p.requires_grad]
+print(f"Trainable params: {sum(p.numel() for p in trainable):,}")
 
-    optimizer = torch.optim.AdamW(trainable, lr=LR, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+optimizer = torch.optim.AdamW(trainable, lr=LR, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-    best_bleu4 = 0.0
-    ckpt = RESULTS / f"best_{bt}_llama3.pt"
+best_bleu4 = 0.0
+ckpt = RESULTS / f"best_{bt}_llama3.pt"
 
-    for epoch in range(1, EPOCHS + 1):
-        t0   = time.time()
-        loss = train_epoch(model, encoder, train_loader, optimizer)
-        scheduler.step()
-        vm   = evaluate_split(model, encoder, val_loader)
-        print(f"  Epoch {epoch}/{EPOCHS}  loss={loss:.4f}  val={vm}  ({time.time()-t0:.0f}s)")
-        if vm["BLEU-4"] > best_bleu4:
-            best_bleu4 = vm["BLEU-4"]
-            torch.save(model.bottleneck.state_dict(), ckpt)
-            print(f"  *** Best BLEU-4={best_bleu4:.4f} saved → {ckpt.name} ***")
+for epoch in range(1, EPOCHS + 1):
+    t0   = time.time()
+    loss = train_epoch(model, encoder, train_loader, optimizer)
+    scheduler.step()
+    vm   = evaluate_split(model, encoder, val_loader)
+    print(f"  Epoch {epoch}/{EPOCHS}  loss={loss:.4f}  val={vm}  ({time.time()-t0:.0f}s)")
+    if vm["BLEU-4"] > best_bleu4:
+        best_bleu4 = vm["BLEU-4"]
+        torch.save(model.bottleneck.state_dict(), ckpt)
+        print(f"  *** Best BLEU-4={best_bleu4:.4f} saved → {ckpt.name} ***")
 
-    # ── Test evaluation ───────────────────────────────────────────────────────
-    model.bottleneck.load_state_dict(torch.load(ckpt))
-    test_m = evaluate_split(model, encoder, test_loader)
-    print(f"\n  TEST RESULTS [{bt}]: {test_m}")
-    all_results[bt] = test_m
-
-    del model, optimizer, scheduler
-    torch.cuda.empty_cache()
+# ── Test evaluation ───────────────────────────────────────────────────────
+model.bottleneck.load_state_dict(torch.load(ckpt))
+test_m = evaluate_split(model, encoder, test_loader)
+print(f"\n  TEST RESULTS [{bt}]: {test_m}")
+all_results[bt] = test_m
 
 print("\n✓ All 3 bottlenecks trained!")
 
