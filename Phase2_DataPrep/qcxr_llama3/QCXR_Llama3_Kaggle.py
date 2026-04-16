@@ -4,7 +4,7 @@ QCXR_Llama3_Kaggle.py
 Paste this ENTIRE file into a single Kaggle code cell.
 LLM backbone: meta-llama/Llama-3.1-8B  (4-bit quantized via bitsandbytes)
 Vision encoder: microsoft/swin-base-patch4-window7-224  (frozen)
-Bottlenecks trained: linear, mlp, transformer
+Bottlenecks trained: linear, mlp, transformer, vqc (QCXR-Flamingo)
 
 ⚠️  KAGGLE SETUP REQUIREMENTS (read the Setup Guide below the code):
     1. Enable GPU T4 x2 (or single T4 with 4-bit quant)
@@ -24,6 +24,7 @@ subprocess.run([
     "bitsandbytes",           # 4-bit quantization (critical for 8B on T4)
     "pycocoevalcap",          # CIDEr metric
     "tqdm",
+    "pennylane",              # Quantum circuit simulation (QCXR-Flamingo VQC)
 ], check=False)
 
 import torch
@@ -89,11 +90,12 @@ LLM_DIM       = 4096       # Llama-3.1-8B hidden dim
 # ── Training hyperparameters ──────────────────────────────────────────────────
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 # ── Select which bottleneck to train in this session ───────────
-# Options: "linear", "mlp", "transformer"
+# Options: "linear", "mlp", "transformer", "vqc"
+# NOTE: "vqc" = QCXR-Flamingo quantum bottleneck (slower, ~2x epoch time)
 CURRENT_BOTTLENECK = "linear" 
 
 BATCH_SIZE    = 4          # Slightly increased for T4 x2
-EPOCHS        = 15
+EPOCHS        = 12         # Reduced from 15 for Kaggle 12h safety margin
 LR            = 5e-5       
 MAX_TEXT_LEN  = 60
 BEAM_SIZE     = 1          # Set to 1 for 3x faster training; use 3 only for final test
@@ -161,14 +163,89 @@ class TransformerBottleneck(nn.Module):
         return self.proj(self.tf(x).mean(1)).unsqueeze(1)
 
 
+# ── QCXR-Flamingo VQC Bottleneck ─────────────────────────────────────────────
+# Implements the quantum pipeline from the QCXR-Flamingo paper:
+#   Image → Encoder → Reducer → VQC → Projection → LM
+#
+# Pipeline (per paper notation):
+#   zi = W·fi              (Feature Compression: vd → n_qubits)
+#   |ψ(x)⟩ = ⊗ Ry(zj)|0⟩  (Quantum Encoding via Ry rotation gates)
+#   |ψθ⟩   = U(θ)|ψ(x)⟩   (Variational Circuit with trainable θ)
+#   qi     = ⟨ψθ|Zi|ψθ⟩   (Measurement: PauliZ expectation values)
+#   hv     = Wq·q          (Projection: n_qubits → LLM_DIM)
+# ─────────────────────────────────────────────────────────────────────────────
+import pennylane as qml
+import math
+
+class VQCBottleneck(nn.Module):
+    def __init__(self, vd, ld, n_qubits=4, n_layers=2):
+        super().__init__()
+        self.n_qubits  = n_qubits
+        self.n_layers  = n_layers
+
+        # Classical reducer: vd → n_qubits (zi = W·fi)
+        self.reducer   = nn.Linear(vd, n_qubits)
+
+        # Variational parameters θ: shape [n_layers, n_qubits, 3] (Rot gate: Rz Ry Rz)
+        self.weights   = nn.Parameter(
+            torch.randn(n_layers, n_qubits, 3) * 0.01
+        )
+
+        # Classical projection: n_qubits → ld (hv = Wq·q)
+        self.proj      = nn.Linear(n_qubits, ld)
+
+        # PennyLane simulator device
+        self.dev       = qml.device("default.qubit", wires=n_qubits)
+
+        # Build and JIT-compile the QNode
+        @qml.qnode(self.dev, interface="torch", diff_method="backprop")
+        def _circuit(inputs, weights):
+            # ── Encoding layer: Ry(zi)|0⟩ ────────────────────────────
+            for i in range(n_qubits):
+                qml.RY(inputs[i], wires=i)
+
+            # ── Variational layers: U(θ) ──────────────────────────────
+            for layer in range(n_layers):
+                # Trainable Rot gates (Rz·Ry·Rz decomposition)
+                for i in range(n_qubits):
+                    qml.Rot(weights[layer, i, 0],
+                            weights[layer, i, 1],
+                            weights[layer, i, 2], wires=i)
+                # Entanglement: linear CNOT chain
+                for i in range(n_qubits - 1):
+                    qml.CNOT(wires=[i, i + 1])
+
+            # ── Measurement: PauliZ expectation values qi = ⟨ψθ|Zi|ψθ⟩
+            return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+
+        self._circuit = _circuit
+
+    def forward(self, x):
+        # x: [B, N, vd]  →  pool  →  [B, vd]
+        x   = x.mean(1).float()
+
+        # Feature compression + scale to [-π, π] for stable Ry encoding
+        z   = torch.tanh(self.reducer(x)) * math.pi  # [B, n_qubits]
+
+        # Run quantum circuit sample-by-sample (PennyLane needs 1-D inputs)
+        q_out = torch.stack([
+            torch.stack(self._circuit(z[b], self.weights))
+            for b in range(z.size(0))
+        ])  # [B, n_qubits]
+
+        # Project quantum output to LLM embedding dimension
+        return self.proj(q_out).unsqueeze(1)  # [B, 1, ld]
+
+
 def get_bottleneck(name, vd, ld):
     return {
         "linear":      LinearBottleneck(vd, ld),
         "mlp":         MLPBottleneck(vd, ld),
         "transformer": TransformerBottleneck(vd, ld),
+        "vqc":         VQCBottleneck(vd, ld, n_qubits=4, n_layers=2),
     }[name]
 
-print("Bottleneck classes defined.")
+print("Bottleneck classes defined (Linear | MLP | Transformer | VQC).")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CELL 6 ─ QCXR Model with Llama-3.1-8B (4-bit quantized)
@@ -515,12 +592,13 @@ print("=" * 65)
 
 print("\nPaper targets (QCXR-Flamingo Table 1):")
 targets = [
-    ("Linear",      0.25, 0.30, 0.80, 0.60),
-    ("MLP",         0.28, 0.33, 0.90, 0.65),
-    ("Transformer", 0.30, 0.35, 1.00, 0.68),
+    ("Linear",         0.25, 0.30, 0.80, 0.60),
+    ("MLP",            0.28, 0.33, 0.90, 0.65),
+    ("Transformer",    0.30, 0.35, 1.00, 0.68),
+    ("QCXR-Flamingo",  0.31, 0.36, 1.05, 0.70),
 ]
 for row in targets:
-    print(f"  {row[0]:<14} BLEU≈{row[1]}  ROUGE≈{row[2]}  CIDEr≈{row[3]}  Clin-F1≈{row[4]}")
+    print(f"  {row[0]:<16} BLEU≈{row[1]}  ROUGE≈{row[2]}  CIDEr≈{row[3]}  Clin-F1≈{row[4]}")
 
 # ── Save CSV ──────────────────────────────────────────────────────────────────
 csv_path = RESULTS / "metrics_llama3.csv"

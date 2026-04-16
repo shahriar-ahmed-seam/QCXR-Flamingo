@@ -16,7 +16,7 @@ Required Kaggle datasets attached to this notebook:
 # CELL 1 ─ Install & check GPU
 # ═══════════════════════════════════════════════════════════════════════════════
 import subprocess
-subprocess.run(["pip", "install", "-q", "transformers", "accelerate", "tqdm", "pycocoevalcap"], check=False)
+subprocess.run(["pip", "install", "-q", "transformers", "accelerate", "tqdm", "pycocoevalcap", "pennylane"], check=False)
 
 import torch
 print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU ONLY")
@@ -81,7 +81,7 @@ EPOCHS       = 15
 LR           = 1e-4
 MAX_TEXT_LEN = 60
 BEAM_SIZE    = 3
-BOTTLENECKS  = ["linear", "mlp", "transformer"]
+BOTTLENECKS  = ["linear", "mlp", "transformer", "vqc"]
 print(f"Device: {DEVICE}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -139,9 +139,53 @@ class TransformerBottleneck(nn.Module):
 def get_bottleneck(name, vd, ld):
     return {"linear": LinearBottleneck(vd, ld),
             "mlp":    MLPBottleneck(vd, ld),
-            "transformer": TransformerBottleneck(vd, ld)}[name]
+            "transformer": TransformerBottleneck(vd, ld),
+            "vqc":    VQCBottleneck(vd, ld, n_qubits=4, n_layers=2)}[name]
 
-print("Bottleneck classes defined.")
+# ── QCXR-Flamingo VQC Bottleneck ───────────────────────────────────────────
+# Implements the quantum pipeline from the QCXR-Flamingo paper:
+#   zi = W·fi              (Feature Compression: vd → n_qubits)
+#   |ψ(x)⟩ = ⊗ Ry(zj)|0⟩  (Quantum Encoding)
+#   |ψθ⟩   = U(θ)|ψ(x)⟩   (Variational Circuit)
+#   qi     = ⟨ψθ|Zi|ψθ⟩   (PauliZ measurement)
+#   hv     = Wq·q          (Projection → LLM dim)
+import pennylane as qml
+import math
+
+class VQCBottleneck(nn.Module):
+    def __init__(self, vd, ld, n_qubits=4, n_layers=2):
+        super().__init__()
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        self.reducer  = nn.Linear(vd, n_qubits)
+        self.weights  = nn.Parameter(torch.randn(n_layers, n_qubits, 3) * 0.01)
+        self.proj     = nn.Linear(n_qubits, ld)
+        self.dev      = qml.device("default.qubit", wires=n_qubits)
+
+        @qml.qnode(self.dev, interface="torch", diff_method="backprop")
+        def _circuit(inputs, weights):
+            for i in range(n_qubits):
+                qml.RY(inputs[i], wires=i)
+            for layer in range(n_layers):
+                for i in range(n_qubits):
+                    qml.Rot(weights[layer, i, 0],
+                            weights[layer, i, 1],
+                            weights[layer, i, 2], wires=i)
+                for i in range(n_qubits - 1):
+                    qml.CNOT(wires=[i, i + 1])
+            return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+        self._circuit = _circuit
+
+    def forward(self, x):
+        x = x.mean(1).float()
+        z = torch.tanh(self.reducer(x)) * math.pi
+        q_out = torch.stack([
+            torch.stack(self._circuit(z[b], self.weights))
+            for b in range(z.size(0))
+        ])
+        return self.proj(q_out).unsqueeze(1)
+
+print("Bottleneck classes defined (Linear | MLP | Transformer | VQC).")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CELL 5 ─ Full QCXR model
@@ -458,8 +502,13 @@ for name, m in all_results.items():
 print("=" * 62)
 
 print("\nPaper targets (QCXR-Flamingo Table 1):")
-for row in [("Linear", 0.25, 0.30, 0.80, 0.60), ("MLP", 0.28, 0.33, 0.90, 0.65), ("Transformer", 0.30, 0.35, 1.00, 0.68)]:
-    print(f"  {row[0]:<14} BLEU≈{row[1]}  ROUGE≈{row[2]}  CIDEr≈{row[3]}  Clin-F1≈{row[4]}")
+for row in [
+    ("Linear",        0.25, 0.30, 0.80, 0.60),
+    ("MLP",           0.28, 0.33, 0.90, 0.65),
+    ("Transformer",   0.30, 0.35, 1.00, 0.68),
+    ("QCXR-Flamingo", 0.31, 0.36, 1.05, 0.70),
+]:
+    print(f"  {row[0]:<16} BLEU≈{row[1]}  ROUGE≈{row[2]}  CIDEr≈{row[3]}  Clin-F1≈{row[4]}")
 
 csv_path = RESULTS / "metrics_table.csv"
 with open(csv_path, "w", newline="") as f:
