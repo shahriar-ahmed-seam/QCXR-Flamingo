@@ -234,7 +234,9 @@ class VQCBottleneck(nn.Module):
         ])  # [B, n_qubits]
 
         # Project quantum output to LLM embedding dimension
-        return self.proj(q_out).unsqueeze(1)  # [B, 1, ld]
+        # .float() is required: PennyLane returns float64 (Double), but
+        # self.proj weights are float32 — dtype mismatch causes RuntimeError
+        return self.proj(q_out.float()).unsqueeze(1)  # [B, 1, ld]
 
 
 def get_bottleneck(name, vd, ld):
