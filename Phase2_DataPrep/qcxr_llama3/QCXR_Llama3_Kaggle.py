@@ -244,7 +244,7 @@ def get_bottleneck(name, vd, ld):
         "linear":      LinearBottleneck(vd, ld),
         "mlp":         MLPBottleneck(vd, ld),
         "transformer": TransformerBottleneck(vd, ld),
-        "vqc":         VQCBottleneck(vd, ld, n_qubits=4, n_layers=2),
+        "vqc":         VQCBottleneck(vd, ld, n_qubits=8, n_layers=4),
     }[name]
 
 print("Bottleneck classes defined (Linear | MLP | Transformer | VQC).")
