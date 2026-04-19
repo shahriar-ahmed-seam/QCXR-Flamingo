@@ -92,7 +92,7 @@ DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 # ── Select which bottleneck to train in this session ───────────
 # Options: "linear", "mlp", "transformer", "vqc"
 # NOTE: "vqc" = QCXR-Flamingo quantum bottleneck (slower, ~2x epoch time)
-CURRENT_BOTTLENECK = "linear" 
+CURRENT_BOTTLENECK = "vqc" 
 
 BATCH_SIZE    = 4          # Slightly increased for T4 x2
 EPOCHS        = 12         # Reduced from 15 for Kaggle 12h safety margin
